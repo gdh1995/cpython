@@ -258,6 +258,29 @@ def copyfileobj(src, dst, length=None, exception=OSError, bufsize=None):
         dst.write(buf)
     return
 
+def get_user_group_names(uid, gid, unames_cache, gnames_cache):
+    # Calls to pwd.getpwuid() and grp.getgrgid() tend to be expensive. To speed
+    # things up, cache the resolved usernames and group names.
+    if pwd:
+        if uid not in unames_cache:
+            try:
+                unames_cache[uid] = pwd.getpwuid(uid)[0]
+            except KeyError:
+                unames_cache[uid] = ''
+        uname = unames_cache[uid]
+    else:
+        uname = None
+    if grp:
+        if gid not in gnames_cache:
+            try:
+                gnames_cache[gid] = grp.getgrgid(gid)[0]
+            except KeyError:
+                gnames_cache[gid] = ''
+        gname = gnames_cache[gid]
+    else:
+        gname = None
+    return uname, gname
+
 def _safe_print(s):
     encoding = getattr(sys.stdout, 'encoding', None)
     if encoding is not None:
@@ -883,6 +906,9 @@ class TarInfo(object):
         _link_target = None,
         )
 
+    _unames = {}    # Cached mappings of uid=0 -> uname
+    _gnames = {}    # Cached mappings of gid=0 -> gname
+
     def __init__(self, name=""):
         """Construct a TarInfo object. name is the optional name
            of the member.
@@ -1191,8 +1217,9 @@ class TarInfo(object):
         info["size"] = len(name)
         info["magic"] = GNU_MAGIC
         info["mode"] = 0o100644
-        info["uname"] = "root"
-        info["gname"] = "root"
+        uname, gname = get_user_group_names(0, 0, cls._unames, cls._gnames)
+        info["uname"] = uname or ""
+        info["gname"] = gname or ""
 
         # create extended header + name blocks.
         return cls._create_header(info, USTAR_FORMAT, encoding, errors) + \
@@ -2144,22 +2171,12 @@ class TarFile(object):
         tarinfo.type = type
         tarinfo.linkname = linkname
 
-        # Calls to pwd.getpwuid() and grp.getgrgid() tend to be expensive. To
-        # speed things up, cache the resolved usernames and group names.
-        if pwd:
-            if tarinfo.uid not in self._unames:
-                try:
-                    self._unames[tarinfo.uid] = pwd.getpwuid(tarinfo.uid)[0]
-                except KeyError:
-                    self._unames[tarinfo.uid] = ''
-            tarinfo.uname = self._unames[tarinfo.uid]
-        if grp:
-            if tarinfo.gid not in self._gnames:
-                try:
-                    self._gnames[tarinfo.gid] = grp.getgrgid(tarinfo.gid)[0]
-                except KeyError:
-                    self._gnames[tarinfo.gid] = ''
-            tarinfo.gname = self._gnames[tarinfo.gid]
+        uname, gname = get_user_group_names(tarinfo.uid, tarinfo.gid,
+                                            self._unames, self._gnames)
+        if uname != None:
+            tarinfo.uname = uname
+        if gname != None:
+            tarinfo.gname = gname
 
         if type in (CHRTYPE, BLKTYPE):
             if hasattr(os, "major") and hasattr(os, "minor"):
